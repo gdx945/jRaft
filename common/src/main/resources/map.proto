@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+option java_package = "io.github.gdx945.protobuf";
+option java_outer_classname = "Map";
+
+import "any.proto";
+
+message map {
+  map<string, any> map = 1;
+  map<string, map> map1 = 2;
+}

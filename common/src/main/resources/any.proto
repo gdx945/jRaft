@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+option java_package = "io.github.gdx945.protobuf";
+//option java_outer_classname = "Any";
+
+message any {
+  oneof any_oneof {
+    bool boolField = 1;
+    double doubleField = 2;
+    int64 longField = 3;
+    string stringField = 4;
+  }
+}
