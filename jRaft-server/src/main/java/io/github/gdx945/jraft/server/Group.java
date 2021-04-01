@@ -6,21 +6,22 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import io.github.gdx945.jraft.server.model.LogEntry;
+import io.github.gdx945.jraft.common.param.AddLogEntryResp;
 import io.github.gdx945.jraft.server.replicate.Pipeline;
+import io.github.gdx945.jraft.server.replicate.model.IdxAndFuture;
+import io.github.gdx945.jraft.server.replicate.util.ReplicateFuture;
 import io.github.gdx945.jraft.server.rpc.method.ServerRpcMethod;
 import io.github.gdx945.jraft.server.rpc.param.AppendEntriesReq;
 import io.github.gdx945.jraft.server.rpc.param.AppendEntriesResp;
 import io.github.gdx945.jraft.server.rpc.param.RequestVoteReq;
 import io.github.gdx945.jraft.server.rpc.param.RequestVoteResp;
 import io.github.gdx945.rpc.RpcClient;
-import io.github.gdx945.util.CommonFuture;
 import io.netty.util.concurrent.DefaultThreadFactory;
 
 /**
@@ -50,8 +51,6 @@ class Group {
 
     private final ThreadFactory appendEntriesThreadFactory = new DefaultThreadFactory("appendEntries");
 
-    private final Integer[] leaderCommit = new Integer[] {0}; // todo
-
     private int replicationTimeout;
 
     private String nodeId;
@@ -63,8 +62,7 @@ class Group {
         for (String s : nodeAddrList) {
             String[] hostAndPort = s.split(":");
             this.rpcClientList.add(new RpcClient(hostAndPort[0], Integer.parseInt(hostAndPort[1])));
-            this.replicatePipelineList.add(
-                new Pipeline(nodeId, new RpcClient(hostAndPort[0], Integer.parseInt(hostAndPort[1])), () -> leaderCommit[0], replicationTimeout));
+            this.replicatePipelineList.add(new Pipeline(nodeId, new RpcClient(hostAndPort[0], Integer.parseInt(hostAndPort[1])), replicationTimeout));
         }
 
         this.replicationTimeout = replicationTimeout;
@@ -86,7 +84,7 @@ class Group {
                     requestVoteResp = (RequestVoteResp) rpcClient.invoke(ServerRpcMethod.REQUEST_VOTE, requestVoteReq, timeout);
                 }
                 catch (Exception e) {
-                    logger.debug("request vote from ".concat(rpcClient.getAddr()).concat(" failed."), e);
+                    //                    logger.error("request vote from ".concat(rpcClient.getAddr()).concat(" failed."), e);
                     countDownLatch.countDown();
                     return;
                 }
@@ -130,7 +128,7 @@ class Group {
                     appendEntriesResp = (AppendEntriesResp) rpcClient.invoke(ServerRpcMethod.HEARTBEAT, appendEntriesReq, timeout);
                 }
                 catch (Exception e) {
-                    logger.debug("send heartbeat to ".concat(rpcClient.getAddr()).concat(" failed."), e);
+                    //                    logger.error("send heartbeat to ".concat(rpcClient.getAddr()).concat(" failed."), e);
                     countDownLatch.countDown();
                     return;
                 }
@@ -168,41 +166,13 @@ class Group {
         }
     }
 
-    boolean appendEntries(LogEntry logEntry) {
-        int halfFollowerCount = this.replicatePipelineList.size() / 2;
-        CountDownLatch countDownLatch = new CountDownLatch(halfFollowerCount);
-        AtomicInteger atomicInteger = new AtomicInteger(0);
-        int index = logEntry.getIndex();
+    // todo 外部调用的时候保证顺序
+    ReplicateFuture appendEntries(int index, Supplier<AddLogEntryResp> getResult) {
+        IdxAndFuture<AddLogEntryResp> idxAndFuture = new IdxAndFuture<>(index, new ReplicateFuture(this.replicatePipelineList.size() / 2, getResult));
         for (Pipeline pipeline : this.replicatePipelineList) {
-            appendEntriesThreadPoolExecutor().execute(() -> {
-                CommonFuture<Boolean> commonFuture = pipeline.replicate(index);
-                try {
-                    if (Boolean.TRUE.equals(commonFuture.get(replicationTimeout - 10, TimeUnit.MILLISECONDS))) {
-                        atomicInteger.incrementAndGet();
-                        countDownLatch.countDown();
-                    }
-                }
-                catch (Exception e) {
-                    logger.debug("append entries sync to ".concat(pipeline.getAddr()).concat(" failed."), e);
-                }
-            });
+            pipeline.replicate(idxAndFuture);
         }
-
-        try {
-            countDownLatch.await(this.replicationTimeout, TimeUnit.MILLISECONDS);
-        }
-        catch (InterruptedException e) {
-            logger.error("unknown", e); // 这个线程暂时没有interrupted
-        }
-
-        boolean result = false;
-        if (atomicInteger.get() >= halfFollowerCount) {
-            result = true;
-            synchronized (leaderCommit) {
-                leaderCommit[0] = index;
-            }
-        }
-        return result;
+        return idxAndFuture.getReplicateFuture();
     }
 
     private ThreadPoolExecutor requestVoteThreadPoolExecutor() {

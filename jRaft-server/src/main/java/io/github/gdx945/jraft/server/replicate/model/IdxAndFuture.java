@@ -1,6 +1,8 @@
 package io.github.gdx945.jraft.server.replicate.model;
 
-import io.github.gdx945.util.CommonFuture;
+import java.io.Serializable;
+
+import io.github.gdx945.jraft.server.replicate.util.ReplicateFuture;
 
 /**
  * 类描述
@@ -9,16 +11,16 @@ import io.github.gdx945.util.CommonFuture;
  * Created on 2021-03-19 11:02:59
  * @since : 0.1
  */
-public class IdxAndFuture implements Comparable<IdxAndFuture> {
+public class IdxAndFuture<V extends Serializable> implements Comparable<IdxAndFuture> {
 
-    public IdxAndFuture(Integer index, CommonFuture commonFuture) {
+    public IdxAndFuture(Integer index, ReplicateFuture replicateFuture) {
         this.index = index;
-        this.commonFuture = commonFuture;
+        this.replicateFuture = replicateFuture;
     }
 
     private Integer index;
 
-    private CommonFuture commonFuture;
+    private ReplicateFuture replicateFuture;
 
     @Override
     public int compareTo(IdxAndFuture o) {
@@ -29,7 +31,7 @@ public class IdxAndFuture implements Comparable<IdxAndFuture> {
         return index;
     }
 
-    public CommonFuture getCommonFuture() {
-        return commonFuture;
+    public ReplicateFuture getReplicateFuture() {
+        return replicateFuture;
     }
 }

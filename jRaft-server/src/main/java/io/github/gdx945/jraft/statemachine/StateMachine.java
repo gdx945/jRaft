@@ -1,5 +1,7 @@
 package io.github.gdx945.jraft.statemachine;
 
+import java.io.Serializable;
+
 /**
  * 类描述
  *
@@ -7,7 +9,7 @@ package io.github.gdx945.jraft.statemachine;
  * Created on 2021-03-22 14:21:09
  * @since : 0.1
  */
-public interface StateMachine<T, R> {
+public interface StateMachine {
 
-    R apply(T t);
+    Serializable apply(Object p1, Object p2);
 }

@@ -144,26 +144,24 @@ public class LogEntriesStore {
     }
 
     public void addLogEntries(LogEntry logEntry) { // todo 异常处理
-        synchronized (LogEntriesStore.class) {
-            try {
-                this.randomAccessLogEntries.seek(this.randomAccessLogEntries.length());
-                this.randomAccessLogEntryIndex.seek(this.randomAccessLogEntryIndex.length());
-            }
-            catch (IOException e) {
-                throw ExceptionUtil.wrapRuntime(e);
-            }
-            byte[] bytes;
-            logEntry.setIndex(this.lastIndex + 1);
-            bytes = (JSONUtil.parse(logEntry).toString() + "\n").getBytes();
-            try {
-                this.randomAccessLogEntries.write(bytes);
-                this.randomAccessLogEntryIndex.write(NumberUtil.toBytes(this.randomAccessLogEntries.length(), Integer.BYTES));
-                this.lastLogEntry = logEntry;
-                this.lastIndex++;
-            }
-            catch (IOException e) {
-                throw ExceptionUtil.wrapRuntime(e);
-            }
+        try {
+            this.randomAccessLogEntries.seek(this.randomAccessLogEntries.length());
+            this.randomAccessLogEntryIndex.seek(this.randomAccessLogEntryIndex.length());
+        }
+        catch (IOException e) {
+            throw ExceptionUtil.wrapRuntime(e);
+        }
+        byte[] bytes;
+        logEntry.setIndex(this.lastIndex + 1);
+        bytes = (JSONUtil.parse(logEntry).toString() + "\n").getBytes();
+        try {
+            this.randomAccessLogEntries.write(bytes);
+            this.randomAccessLogEntryIndex.write(NumberUtil.toBytes(this.randomAccessLogEntries.length(), Integer.BYTES));
+            this.lastLogEntry = logEntry;
+            this.lastIndex++;
+        }
+        catch (IOException e) {
+            throw ExceptionUtil.wrapRuntime(e);
         }
     }
 

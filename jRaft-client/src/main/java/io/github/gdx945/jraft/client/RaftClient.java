@@ -71,7 +71,6 @@ public class RaftClient {
                         leaderNodeIds.stream().collect(Collectors.groupingBy(String::toString, Collectors.counting())).entrySet().stream()
                             .filter(stringLongEntry -> stringLongEntry.getValue() > (size / 2)).findFirst()
                             .ifPresent(stringLongEntry -> this.leaderNodeId = stringLongEntry.getKey());
-                        logger.info("leader node id: {}", this.leaderNodeId);
                         invokeFuture.trySuccess(this.leaderNodeId);
                     }
                 }
@@ -105,8 +104,7 @@ public class RaftClient {
             try {
                 AddLogEntryResp addLogEntryResp = (AddLogEntryResp) rpcClient.invoke(CommonRpcMethod.ADD_LOG_ENTRY, addLogEntryReq, 2000L);
                 this.leaderNodeId = addLogEntryResp.getLeaderNodeId();
-                //                logger.info("index: {}, leader node id: {}", addLogEntryResp.getIndex(),
-                //                    addLogEntryResp.getLeaderNodeId());
+                //                logger.info("idx: {}, result: {}, leader: {}", addLogEntryResp.getIndex(), addLogEntryResp.getResult(), addLogEntryResp.getLeaderNodeId());
                 if (!addLogEntryResp.getLeaderNodeId().equals(addLogEntryResp.getNodeId())) {
                     addLogEntry(logEntry);
                 }

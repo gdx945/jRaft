@@ -17,6 +17,7 @@ public class RpcService1 {
     public static void main(String[] args) {
         LogEntriesStore logEntriesStore = new LogEntriesStore("/Users/gc/Workpath/0自己代码项目/jRaft-parent-store/node1");
         new RpcService(4444).putServiceHandler(CommonRpcMethod.ADD_LOG_ENTRY, serializable -> {
+//            logEntriesStore.addLogEntries((LogEntry) serializable, null);
             logEntriesStore.addLogEntries((LogEntry) serializable);
             return ((LogEntry) serializable).getIndex();
         });

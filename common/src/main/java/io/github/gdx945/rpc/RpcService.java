@@ -4,8 +4,11 @@ import java.io.Serializable;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
@@ -14,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import io.github.gdx945.rpc.method.RpcMethod;
 import io.github.gdx945.rpc.param.RpcReq;
 import io.github.gdx945.rpc.param.RpcResp;
+import io.github.gdx945.util.CommonFuture;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -39,15 +43,28 @@ public class RpcService {
 
     private final static Logger logger = LoggerFactory.getLogger(RpcService.class);
 
-    private final Map<RpcMethod, Function<Serializable, Serializable>> SERVICE_HANDLER = new ConcurrentHashMap<>();
+    private final Map<RpcMethod, Function<Serializable, Object>> SERVICE_HANDLER = new ConcurrentHashMap<>();
 
-    private final Map<RpcMethod, ExecutorService> EXECUTOR_SERVICE_MAP = new ConcurrentHashMap<>();
+    private final Map<RpcMethod, ExecutorService> DEAL_EXECUTOR_SERVICE_MAP = new ConcurrentHashMap<>();
 
-    public RpcService putServiceHandler(RpcMethod method, Function<Serializable, Serializable> serviceHandler, Object... objects) {
+    private final Map<RpcMethod, ExecutorService> RETURN_EXECUTOR_SERVICE_MAP = new ConcurrentHashMap<>();
+
+    private ExecutorService executorService = Executors.newFixedThreadPool(8, new DefaultThreadFactory("RpcService"));
+
+    public RpcService putServiceHandler(RpcMethod method, Function<Serializable, Object> serviceHandler) {
         // todo check duplicate method
         SERVICE_HANDLER.put(method, serviceHandler);
-        if (objects.length > 0 && objects[0] instanceof ExecutorService) {
-            EXECUTOR_SERVICE_MAP.put(method, (ExecutorService) objects[0]);
+        return this;
+    }
+
+    public RpcService putServiceHandler(RpcMethod method, Function<Serializable, Object> serviceHandler, ExecutorService dealExecutorService,
+        ExecutorService returnExecutorService) {
+        putServiceHandler(method, serviceHandler);
+        if (dealExecutorService != null) {
+            DEAL_EXECUTOR_SERVICE_MAP.put(method, dealExecutorService);
+        }
+        if (returnExecutorService != null) {
+            RETURN_EXECUTOR_SERVICE_MAP.put(method, returnExecutorService);
         }
         return this;
     }
@@ -55,8 +72,6 @@ public class RpcService {
     public RpcService(int port) {
         start(port);
     }
-
-    private ExecutorService executorService = Executors.newFixedThreadPool(8, new DefaultThreadFactory("RpcService"));
 
     private void start(int port) {
         EventLoopGroup bossGroup = new NioEventLoopGroup();
@@ -71,12 +86,25 @@ public class RpcService {
                     @Override
                     public void channelRead(ChannelHandlerContext ctx, Object msg) {
                         RpcReq rpcReq = (RpcReq) msg;
-                        chooseExecutorService(rpcReq.getMethod()).submit(() -> {
-                            Serializable result = SERVICE_HANDLER.get(rpcReq.getMethod()).apply(rpcReq.getParam());
+                        chooseExecutorService(DEAL_EXECUTOR_SERVICE_MAP, rpcReq.getMethod()).submit(() -> {
+                            Object result = SERVICE_HANDLER.get(rpcReq.getMethod()).apply(rpcReq.getParam());
                             RpcResp rpcResp = new RpcResp(rpcReq.getRpcId());
                             rpcResp.setMethod(rpcReq.getMethod());
-                            rpcResp.setResult(result);
-                            ctx.writeAndFlush(rpcResp);
+                            if (result instanceof CommonFuture) {
+                                chooseExecutorService(RETURN_EXECUTOR_SERVICE_MAP, rpcReq.getMethod()).submit(() -> {
+                                    try {
+                                        rpcResp.setResult(((CommonFuture) result).get(1024, TimeUnit.MILLISECONDS));
+                                        ctx.writeAndFlush(rpcResp);
+                                    }
+                                    catch (InterruptedException | ExecutionException | TimeoutException e) {
+                                        logger.error("return future failed.", e);
+                                    }
+                                });
+                            }
+                            else {
+                                rpcResp.setResult((Serializable) result);
+                                ctx.writeAndFlush(rpcResp);
+                            }
                         });
                     }
                 });
@@ -87,7 +115,7 @@ public class RpcService {
         b.bind(port);
     }
 
-    private ExecutorService chooseExecutorService(RpcMethod rpcMethod) {
-        return Optional.ofNullable(this.EXECUTOR_SERVICE_MAP.get(rpcMethod)).orElse(this.executorService);
+    private ExecutorService chooseExecutorService(Map<RpcMethod, ExecutorService> executorServiceMap, RpcMethod rpcMethod) {
+        return Optional.ofNullable(executorServiceMap.get(rpcMethod)).orElse(this.executorService);
     }
 }

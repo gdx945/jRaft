@@ -24,8 +24,8 @@ public class RaftClient1 {
         RaftClientOptions raftClientOptions = new RaftClientOptions();
         raftClientOptions.setNodeAddrList("127.0.0.1:1111;127.0.0.1:2222;127.0.0.1:3333");
 
-        int count = 8;
-        int count2 = 1;
+        int count = 10;
+        int count2 = 5;
         RaftClient[] raftClientList = new RaftClient[count];
         for (int i = 0; i < count; i++) {
             raftClientList[i] = new RaftClient(raftClientOptions);
@@ -38,15 +38,17 @@ public class RaftClient1 {
 
         ExecutorService executorService = Executors.newFixedThreadPool(count * count2);
         CountDownLatch countDownLatch = new CountDownLatch(count * count2);
+        System.out.println("start");
         long time = System.currentTimeMillis();
 
         for (int i = 0; i < count; i++) {
             for (int j = 0; j < count2; j++) {
                 int finalI = i;
                 executorService.submit(() -> {
-                    for (int x = 0; x < 8192; x++) {
-                        raftClientList[finalI].addLogEntry(new LogEntry("add", map));
-//                        raftClientList[finalI].addLogEntry(null);
+                    for (int x = 0; x < 200; x++) {
+//                        raftClientList[finalI].addLogEntry(new LogEntry("put", map));
+                                                raftClientList[finalI].addLogEntry(new LogEntry("get", "a"));
+                        //                        raftClientList[finalI].addLogEntry(null);
                     }
                     countDownLatch.countDown();
                 });

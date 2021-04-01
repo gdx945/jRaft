@@ -67,6 +67,7 @@ public class TestLogEntriesStore {
     private static void add(LogEntriesStore logEntriesStore) {
         for (int i = 1; i <= 8192; i++) {
             LogEntry logEntry = new LogEntry(i, 0, "command", "param");
+//            logEntriesStore.addLogEntries(logEntry, null);
             logEntriesStore.addLogEntries(logEntry);
         }
     }

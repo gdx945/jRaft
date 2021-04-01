@@ -19,6 +19,8 @@ public class AddLogEntryResp implements Serializable {
 
     private String leaderNodeId;
 
+    private Serializable result;
+
     public long getIndex() {
         return index;
     }
@@ -41,5 +43,13 @@ public class AddLogEntryResp implements Serializable {
 
     public void setLeaderNodeId(String leaderNodeId) {
         this.leaderNodeId = leaderNodeId;
+    }
+
+    public Serializable getResult() {
+        return result;
+    }
+
+    public void setResult(Serializable result) {
+        this.result = result;
     }
 }

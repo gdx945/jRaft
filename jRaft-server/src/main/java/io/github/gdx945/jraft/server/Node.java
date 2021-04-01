@@ -1,11 +1,14 @@
 package io.github.gdx945.jraft.server;
 
+import java.io.Serializable;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,6 +32,7 @@ import io.github.gdx945.jraft.server.store.NodeStateStore;
 import io.github.gdx945.jraft.statemachine.StateMachine;
 import io.github.gdx945.jraft.statemachine.impl.DefaultStateMachine;
 import io.github.gdx945.rpc.RpcService;
+import io.github.gdx945.util.CommonFuture;
 import io.github.gdx945.util.RepeatedTimer;
 import io.netty.util.concurrent.DefaultThreadFactory;
 
@@ -65,6 +69,10 @@ public class Node {
         return nodeStateStore;
     }
 
+    public Supplier<Integer> getLeaderCommit() {
+        return this.leaderCommitSupplier;
+    }
+
     private NodeOptions nodeOptions;
 
     /**
@@ -96,19 +104,23 @@ public class Node {
 
     private LogEntriesStore logEntriesStore;
 
-    private StateMachine stateMachine;
+    private final StateMachine stateMachine = Optional.ofNullable(ServiceLoaderUtil.loadFirst(StateMachine.class)).orElse(new DefaultStateMachine());
+
+    private final Integer[] leaderCommit = new Integer[] {0}; // todo
+
+    private Supplier<Integer> leaderCommitSupplier = () -> leaderCommit[0];
 
     private void init() {
-        this.stateMachine = Optional.ofNullable(ServiceLoaderUtil.loadFirst(StateMachine.class)).orElse(new DefaultStateMachine());
-
         this.nodeStateStore = new NodeStateStore(this.nodeOptions.getStorePath());
         this.logEntriesStore = new LogEntriesStore(this.nodeOptions.getStorePath());
 
         new RpcService(nodeOptions.getPort()).putServiceHandler(ServerRpcMethod.REQUEST_VOTE, o -> this.handleVoteRequest((RequestVoteReq) o))
             .putServiceHandler(ServerRpcMethod.HEARTBEAT, o -> this.handleHeartbeat((AppendEntriesReq) o))
             .putServiceHandler(ServerRpcMethod.APPEND_ENTRIES, o -> this.handleAppendEntries((AppendEntriesReq) o),
-                Executors.newFixedThreadPool(1, new DefaultThreadFactory("appendEntries")))
-            .putServiceHandler(CommonRpcMethod.ADD_LOG_ENTRY, o -> this.addLogEntry((AddLogEntryReq) o));
+                Executors.newFixedThreadPool(1, new DefaultThreadFactory("appendEntriesDeal")), null)
+            .putServiceHandler(CommonRpcMethod.ADD_LOG_ENTRY, o -> this.addLogEntry((AddLogEntryReq) o),
+                Executors.newFixedThreadPool(1, new DefaultThreadFactory("addLogEntryDeal")),
+                Executors.newFixedThreadPool(8, new DefaultThreadFactory("addLogEntryReturn")));
 
         this.group = new Group(this.nodeId, this.nodeOptions.getOtherNodeAddr(), this.nodeOptions.getElectionTimeout() / 2);
 
@@ -220,6 +232,7 @@ public class Node {
         AppendEntriesReq appendEntriesReq = new AppendEntriesReq();
         appendEntriesReq.setTerm(this.nodeStateStore.getCurrentTerm());
         appendEntriesReq.setLeaderId(this.nodeId);
+        appendEntriesReq.setLeaderCommit(this.leaderCommit[0]);
 
         AppendEntriesResp appendEntriesResp = this.group.sendHeartbeat(appendEntriesReq, this.heartbeatDelay - 40);
         if (appendEntriesResp.getTerm() > this.nodeStateStore.getCurrentTerm()) {
@@ -239,6 +252,9 @@ public class Node {
         boolean success = false;
         if (this.nodeStateStore.getCurrentTerm() <= appendEntriesReq.getTerm()) {
             becomeFollower();
+            //            synchronized (this.stateMachine) {
+            applyToStateMachine(appendEntriesReq.getLeaderCommit()); // todo
+            //            }
             this.leaderNodeId = appendEntriesReq.getLeaderId();
             this.nodeStateStore.setCurrentTerm(appendEntriesReq.getTerm());
             if (appendEntriesReq.getLeaderId().equals(this.nodeStateStore.getVotedFor())) {
@@ -267,31 +283,56 @@ public class Node {
     // **    选举     ** //
 
     // **    日志同步     ** //
-    private AddLogEntryResp addLogEntry(AddLogEntryReq addLogEntryReq) {
+    private CommonFuture<AddLogEntryResp> addLogEntry(AddLogEntryReq addLogEntryReq) {
+        CommonFuture<AddLogEntryResp> result;
 
-        AddLogEntryResp result = new AddLogEntryResp();
-        result.setLeaderNodeId(this.leaderNodeId);
-        result.setNodeId(this.nodeId);
+        AddLogEntryResp addLogEntryResp = new AddLogEntryResp();
+        addLogEntryResp.setLeaderNodeId(this.leaderNodeId);
+        addLogEntryResp.setNodeId(this.nodeId);
         if (addLogEntryReq == null || addLogEntryReq.getLogEntry() == null || !this.nodeId.equals(this.leaderNodeId)) {
-            result.setIndex(-1L);
+            addLogEntryResp.setIndex(-1L);
+            result = new CommonFuture<>();
+            result.trySuccess(addLogEntryResp);
         }
         else {
             LogEntry logEntryForAdd = new LogEntry(this.nodeStateStore.getCurrentTerm(), -1, addLogEntryReq.getLogEntry().getCommand(),
                 addLogEntryReq.getLogEntry().getParam());
             this.logEntriesStore.addLogEntries(logEntryForAdd);
-            result.setIndex(logEntryForAdd.getIndex());
+            addLogEntryResp.setIndex(logEntryForAdd.getIndex());
 
-            this.group.appendEntries(logEntryForAdd);
+            result = this.group.appendEntries(logEntryForAdd.getIndex(), () -> {
+                addLogEntryResp.setResult(applyToStateMachine(logEntryForAdd.getIndex()));
+                return addLogEntryResp;
+            });
         }
 
         return result;
+    }
+
+    //  保证顺序
+    private Serializable applyToStateMachine(int index) {
+        synchronized (this.stateMachine) {
+            Serializable result = null;
+            int leaderCommit = this.leaderCommitSupplier.get();
+            //            logger.info("applyToStateMachine, {}, {}", index, leaderCommit);
+            int size;
+            while (index > leaderCommit) {
+                size = Math.min(index - leaderCommit, 512);
+                List<LogEntry> logEntryList = this.logEntriesStore.getList(leaderCommit + 1, size);
+                for (LogEntry logEntry : logEntryList) {
+                    result = this.stateMachine.apply(logEntry.getCommand(), logEntry.getParam());
+                }
+                leaderCommit += size;
+            }
+            this.leaderCommit[0] = leaderCommit;
+            return result;
+        }
     }
 
     private AppendEntriesResp handleAppendEntries(AppendEntriesReq appendEntriesReq) {
         AppendEntriesResp result = handleHeartbeat(appendEntriesReq);
         if (result.isSuccess()) {
             result.setSuccess(false);
-            //            logger.info("handleAppendEntries:  {}", JSONUtil.toJsonStr(appendEntriesReq));
             if (appendEntriesReq.getPrevLogIndex() == 0) {
                 result.setSuccess(true);
                 this.logEntriesStore.appendEntries(appendEntriesReq.getPrevLogIndex() + 1, appendEntriesReq.getEntries());
@@ -300,8 +341,6 @@ public class Node {
             else {
                 LogEntry prevLogEntry = CollUtil.getFirst(this.logEntriesStore.getList(appendEntriesReq.getPrevLogIndex(), 1));
                 if (prevLogEntry != null) {
-                    //                    logger.info("handleAppendEntries:  {}, {}, {}, {}", prevLogEntry.getIndex(), appendEntriesReq.getPrevLogIndex(),
-                    //                        prevLogEntry.getTerm(), appendEntriesReq.getPrevLogTerm());
                     if (prevLogEntry.getTerm() == appendEntriesReq.getPrevLogTerm()) {
                         result.setSuccess(true);
                         this.logEntriesStore.appendEntries(appendEntriesReq.getPrevLogIndex() + 1, appendEntriesReq.getEntries());
@@ -316,7 +355,9 @@ public class Node {
                 }
             }
         }
-        //        logger.info("handleAppendEntries: success: {}, nextLogIndex: {}", result.isSuccess(), result.getNextLogIndex());
+
+        //        logger.info("index:  {}, length: {}, success: {}, nextLogIndex: {}", appendEntriesReq.getEntries().get(0).getIndex(),
+        //            appendEntriesReq.getEntries().size(), result.isSuccess(), result.getNextLogIndex());
         return result;
     }
 }
